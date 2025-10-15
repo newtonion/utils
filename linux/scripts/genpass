@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# genpass.sh - generate a secure random password
+# Usage: ./genpass.sh [LENGTH] [-n] [-a]
+#   LENGTH : desired password length (default 16)
+#   -n     : don't copy to clipboard
+#   -a     : allow ambiguous characters (Il1O0) -- by default ambiguous chars are excluded
+
+set -euo pipefail
+
+LENGTH=16
+COPY_TO_CLIP=1
+ALLOW_AMBIGUOUS=0
+
+# parse args
+while (( $# )); do
+  case "$1" in
+    -n|--no-clipboard) COPY_TO_CLIP=0; shift ;;
+    -a|--allow-ambiguous) ALLOW_AMBIGUOUS=1; shift ;;
+    -h|--help)
+      cat <<EOF
+Usage: $0 [LENGTH] [-n] [-a]
+  LENGTH : password length (default 16)
+  -n     : don't copy to clipboard
+  -a     : allow ambiguous characters (Il1O0)
+EOF
+      exit 0
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      exit 1
+      ;;
+    *)
+      LENGTH="$1"
+      shift
+      ;;
+  esac
+done
+
+# minimal length
+if ! [[ "$LENGTH" =~ ^[0-9]+$ ]] || [ "$LENGTH" -lt 4 ]; then
+  echo "Length must be a number >= 4" >&2
+  exit 1
+fi
+
+# character sets (ambiguous characters removed by default)
+LOWER="abcdefghijklmnopqrstuvwxyz"
+UPPER="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+DIGITS="0123456789"
+SYMS='!@#$%^&*()-_=+[]{}<>?/.,:;'
+
+if [ "$ALLOW_AMBIGUOUS" -eq 0 ]; then
+  # remove ambiguous characters: I l 1 O 0
+  LOWER=${LOWER//l/}
+  UPPER=${UPPER//I/}
+  UPPER=${UPPER//O/}
+  DIGITS=${DIGITS//1/}
+  DIGITS=${DIGITS//0/}
+fi
+
+ALL="${LOWER}${UPPER}${DIGITS}${SYMS}"
+
+# helper: get a cryptographically random number (0..n-1)
+rand_mod() {
+  # $1 - modulus (must be >0)
+  local mod=$1
+  # read 4 bytes from /dev/urandom as unsigned int
+  local val
+  val=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+  echo $(( val % mod ))
+}
+
+# pick one random character from a set
+pick_char_from() {
+  local set="$1"
+  local len=${#set}
+  local idx
+  idx=$(rand_mod "$len")
+  echo -n "${set:idx:1}"
+}
+
+# build password: ensure at least one of each class, then fill remainder, then shuffle
+password_chars=()
+password_chars+=( "$(pick_char_from "$LOWER")" )
+password_chars+=( "$(pick_char_from "$UPPER")" )
+password_chars+=( "$(pick_char_from "$DIGITS")" )
+password_chars+=( "$(pick_char_from "$SYMS")" )
+
+remaining=$(( LENGTH - 4 ))
+for ((i=0;i<remaining;i++)); do
+  password_chars+=( "$(pick_char_from "$ALL")" )
+done
+
+# shuffle the characters
+shuffled=$(printf "%s\n" "${password_chars[@]}" | shuf | tr -d '\n')
+
+# output
+echo "$shuffled"
+
+# copy to clipboard if requested and a clipboard tool exists
+if [ "$COPY_TO_CLIP" -eq 1 ]; then
+  if command -v pbcopy >/dev/null 2>&1; then
+    printf "%s" "$shuffled" | pbcopy
+    echo "(copied to macOS clipboard)"
+  elif command -v wl-copy >/dev/null 2>&1; then
+    printf "%s" "$shuffled" | wl-copy
+    echo "(copied to Wayland clipboard via wl-copy)"
+  elif command -v xclip >/dev/null 2>&1; then
+    printf "%s" "$shuffled" | xclip -selection clipboard
+    echo "(copied to X11 clipboard via xclip)"
+  fi
+fi
